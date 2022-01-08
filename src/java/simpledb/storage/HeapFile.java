@@ -22,6 +22,9 @@ import java.util.*;
  */
 public class HeapFile implements DbFile {
 
+    private final File f;
+    private final TupleDesc td;
+
     /**
      * Constructs a heap file backed by the specified file.
      * 
@@ -31,6 +34,8 @@ public class HeapFile implements DbFile {
      */
     public HeapFile(File f, TupleDesc td) {
         // some code goes here
+        this.f = f;
+        this.td = td;
     }
 
     /**
@@ -40,7 +45,7 @@ public class HeapFile implements DbFile {
      */
     public File getFile() {
         // some code goes here
-        return null;
+        return f;
     }
 
     /**
@@ -54,7 +59,7 @@ public class HeapFile implements DbFile {
      */
     public int getId() {
         // some code goes here
-        throw new UnsupportedOperationException("implement this");
+        return f.getAbsoluteFile().hashCode();
     }
 
     /**
@@ -64,13 +69,26 @@ public class HeapFile implements DbFile {
      */
     public TupleDesc getTupleDesc() {
         // some code goes here
-        throw new UnsupportedOperationException("implement this");
+        return td;
     }
 
     // see DbFile.java for javadocs
     public Page readPage(PageId pid) {
         // some code goes here
-        return null;
+        int tableid = pid.getTableId();
+        int pgNo = pid.getPageNumber();
+        final int pageSize = BufferPool.getPageSize();
+        byte[] rawPageData = HeapPage.createEmptyPageData();
+
+        // random access read from disk
+        try {
+            FileInputStream in = new FileInputStream(f);
+            in.skip(pgNo * pageSize);
+            in.read(rawPageData);
+            return new HeapPage(new HeapPageId(tableid, pgNo), rawPageData);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("HeapFile: readPage: file not found");
+        }
     }
 
     // see DbFile.java for javadocs
@@ -84,7 +102,8 @@ public class HeapFile implements DbFile {
      */
     public int numPages() {
         // some code goes here
-        return 0;
+        int fileSizeInByte = (int) f.length();
+        return fileSizeInByte / BufferPool.getPageSize();
     }
 
     // see DbFile.java for javadocs
@@ -106,7 +125,71 @@ public class HeapFile implements DbFile {
     // see DbFile.java for javadocs
     public DbFileIterator iterator(TransactionId tid) {
         // some code goes here
-        return null;
+        return new HeapFileIterator(tid);
+    }
+
+    private class HeapFileIterator implements DbFileIterator {
+        private Integer pgCursor;
+        private Iterator<Tuple> tupleItr;
+        private final TransactionId tid;
+        private final int tableid;
+        private final int numPages;
+
+        public HeapFileIterator(TransactionId tid) {
+            this.pgCursor = null;
+            this.tupleItr = null;
+            this.tid = tid;
+            this.tableid = getId();
+            this.numPages = numPages();
+        }
+
+        private Iterator<Tuple> getTupleItr(int pgNo) throws TransactionAbortedException, DbException{
+            PageId pid = new HeapPageId(tableid, pgNo);
+            return ((HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_ONLY)).iterator();
+        }
+
+        @Override
+        public void open() throws DbException, TransactionAbortedException {
+            pgCursor = 0;
+            tupleItr = getTupleItr(pgCursor);
+        }
+
+        @Override
+        public boolean hasNext() throws DbException, TransactionAbortedException {
+            if (pgCursor != null) {
+                while (pgCursor < numPages - 1) {
+                    if (tupleItr.hasNext()) {
+                        return true;
+                    } else {
+                        pgCursor += 1;
+                        tupleItr = getTupleItr(pgCursor);
+                    }
+                }
+                return tupleItr.hasNext();
+            } else {
+                return false;
+            }
+        }
+
+        @Override
+        public Tuple next() throws DbException, TransactionAbortedException, NoSuchElementException {
+            if (hasNext()) {
+                return tupleItr.next();
+            }
+            throw new NoSuchElementException("HeapFileIterator: error: no more elements");
+        }
+
+        @Override
+        public void rewind() throws DbException, TransactionAbortedException {
+            close();
+            open();
+        }
+
+        @Override
+        public void close() {
+            pgCursor = null;
+            tupleItr = null;
+        }
     }
 
 }
